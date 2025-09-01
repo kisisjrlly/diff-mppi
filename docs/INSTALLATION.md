@@ -1,6 +1,19 @@
-# Installation and Setup Guide
+# Installation an**Software Requirements:**
 
-## System Requirements
+**Operating Systems:**
+- Linux (Ubuntu 18.04+, CentOS 7+, or equivalent)
+- macOS 10.14+
+- Windows 10+
+
+**Python Environment:**
+- Python 3.8, 3.9, 3.10, or 3.11
+- pip 21.0+
+
+**Dependencies:**
+- PyTorch >= 1.9.0
+- NumPy >= 1.21.0
+- Matplotlib >= 3.3.0 (for examples)
+- SciPy >= 1.7.0 (optional, for advanced features)# System Requirements
 
 ### Hardware Requirements
 
@@ -23,12 +36,12 @@
 - Windows 10+
 
 **Python Environment:**
-- Python 3.7, 3.8, 3.9, 3.10, or 3.11
+- Python 3.8, 3.9, 3.10, 3.11, or 3.12
 - pip 21.0+
 
 **Dependencies:**
 - PyTorch >= 1.9.0
-- NumPy >= 1.20.0
+- NumPy >= 1.21.0
 - Matplotlib >= 3.3.0 (for examples)
 - SciPy >= 1.7.0 (optional, for advanced features)
 
@@ -127,7 +140,7 @@ python -m ipykernel install --user --name diff-mppi --display-name "Diff-MPPI"
 jupyter notebook
 ```
 
-## Verification
+### Verification
 
 ### Basic Installation Test
 
@@ -140,7 +153,7 @@ python -c "import diff_mppi; print('✅ Import successful')"
 
 ```bash
 # Run the pendulum example
-python examples/pendulum_example_clean.py
+python examples/pendulum_example.py
 ```
 
 Expected output:
@@ -149,11 +162,16 @@ Using device: cuda
 Testing: Standard MPPI
   Final angle: 179.2°
   Final velocity: -0.018 rad/s
+  Solve time: 0.123s
 Testing: MPPI + Adam
   Final angle: 178.8°
   Final velocity: -0.006 rad/s
-...
-🎉 All tests passed! Library is working correctly.
+  Solve time: 0.108s
+Testing: MPPI + NAG  
+  Final angle: 179.1°
+  Final velocity: -0.012 rad/s
+  Solve time: 0.115s
+✅ All methods successfully swing pendulum to upright position!
 ```
 
 ### Performance Benchmark

@@ -14,14 +14,17 @@ class DiffMPPI:
         control_dim: int,
         dynamics_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         cost_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
-        horizon: int,
-        num_samples: int,
+        horizon: int = 20,
+        num_samples: int = 100,
         temperature: float = 1.0,
         control_bounds: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         acceleration: Optional[str] = None,
-        lr: float = 0.1,
+        lr: float = 0.01,
         momentum: float = 0.9,
-        device: str = "cpu"
+        eps: float = 1e-8,
+        weight_decay: float = 0.0,
+        device: str = "cpu",
+        **kwargs
     )
 ```
 
@@ -33,24 +36,27 @@ class DiffMPPI:
 | `control_dim` | int | Dimension of the control space |
 | `dynamics_fn` | Callable | Function mapping (state, control) → next_state |
 | `cost_fn` | Callable | Function mapping (state, control) → cost |
-| `horizon` | int | Planning horizon length |
-| `num_samples` | int | Number of trajectory samples for Monte Carlo |
+| `horizon` | int | Planning horizon length (default: 20) |
+| `num_samples` | int | Number of trajectory samples for Monte Carlo (default: 100) |
 | `temperature` | float | Temperature parameter λ for path integral (default: 1.0) |
 | `control_bounds` | Optional[Tuple] | (min_control, max_control) tensors for clipping |
 | `acceleration` | Optional[str] | Acceleration method: "adam", "nag", "rmsprop", or None |
-| `lr` | float | Learning rate for acceleration methods (default: 0.1) |
-| `momentum` | float | Momentum parameter for NAG (default: 0.9) |
+| `lr` | float | Learning rate for acceleration methods (default: 0.01) |
+| `momentum` | float | Momentum parameter for NAG/RMSprop (default: 0.9) |
+| `eps` | float | Epsilon parameter for Adam/RMSprop (default: 1e-8) |
+| `weight_decay` | float | Weight decay for regularization (default: 0.0) |
 | `device` | str | PyTorch device: "cpu" or "cuda" (default: "cpu") |
 
 #### Methods
 
-##### `solve(initial_state, num_iterations=10) -> torch.Tensor`
+##### `solve(initial_state, num_iterations=10, verbose=False) -> torch.Tensor`
 
 Solve for optimal control sequence using iterative MPPI.
 
 **Parameters:**
 - `initial_state` (torch.Tensor): Initial state [state_dim]
 - `num_iterations` (int): Number of optimization iterations (default: 10)
+- `verbose` (bool): Print convergence information (default: False)
 
 **Returns:**
 - `torch.Tensor`: Optimal control sequence [horizon, control_dim]
@@ -62,13 +68,13 @@ x0 = torch.tensor([1.0, 0.0, 0.0])
 optimal_control = controller.solve(x0, num_iterations=20)
 ```
 
-##### `rollout(initial_state, control_sequence) -> torch.Tensor`
+##### `rollout(initial_state, control_sequence=None) -> torch.Tensor`
 
 Simulate system trajectory given control sequence.
 
 **Parameters:**
 - `initial_state` (torch.Tensor): Initial state [state_dim]
-- `control_sequence` (torch.Tensor): Control inputs [horizon, control_dim]
+- `control_sequence` (torch.Tensor, optional): Control inputs [horizon, control_dim]. If None, uses current control sequence.
 
 **Returns:**
 - `torch.Tensor`: State trajectory [horizon+1, state_dim]
@@ -120,6 +126,15 @@ controller = diff_mppi.create_mppi_controller(
     horizon=30,
     num_samples=100
 )
+```
+
+##### `reset() -> None`
+
+Reset controller state, including control sequence and acceleration-specific state variables.
+
+**Example:**
+```python
+controller.reset()  # Clear current solution and optimizer state
 ```
 
 ## Function Interfaces
@@ -226,13 +241,18 @@ Adaptive moment estimation with bias correction.
 controller = DiffMPPI(
     ...,
     acceleration="adam",
-    lr=0.1,
-    # Adam-specific parameters
-    beta1=0.9,    # First moment decay
-    beta2=0.999,  # Second moment decay
-    eps=1e-8      # Numerical stability
+    lr=0.01,
+    eps=1e-8,
+    weight_decay=0.0
 )
 ```
+
+**Parameters:**
+- `lr`: Learning rate (default: 0.01)  
+- `eps`: Numerical stability parameter (default: 1e-8)
+- `weight_decay`: L2 regularization weight (default: 0.0)
+
+**Note:** Uses fixed β₁=0.9, β₂=0.999 for moment decay rates.
 
 ### NAG (Nesterov Accelerated Gradient)
 
@@ -242,7 +262,7 @@ Momentum-based acceleration with look-ahead.
 controller = DiffMPPI(
     ...,
     acceleration="nag",
-    lr=0.1,
+    lr=0.01,
     momentum=0.9
 )
 ```
@@ -255,9 +275,9 @@ Root mean square propagation for adaptive learning rates.
 controller = DiffMPPI(
     ...,
     acceleration="rmsprop",
-    lr=0.1,
-    alpha=0.99,   # Smoothing constant
-    eps=1e-8      # Numerical stability
+    lr=0.01,
+    momentum=0.9,
+    eps=1e-8
 )
 ```
 

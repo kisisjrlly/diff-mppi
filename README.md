@@ -66,7 +66,7 @@ trajectory = controller.rollout(initial_state, optimal_control)
 ### Pendulum Swing-up
 
 ```bash
-python examples/pendulum_example_clean.py
+python examples/pendulum_example.py
 ```
 
 This example demonstrates:
@@ -124,9 +124,9 @@ The library supports several gradient-based acceleration methods:
 
 ## Requirements
 
-- Python >= 3.7
+- Python >= 3.8
 - PyTorch >= 1.9
-- NumPy >= 1.20
+- NumPy >= 1.21
 - Matplotlib >= 3.3 (for examples)
 
 ## Architecture
@@ -138,9 +138,7 @@ diff_mppi/
 ├── __init__.py          # Public API
 ├── core.py              # Core MPPI implementation
 examples/
-├── pendulum_example_clean.py    # Pendulum swing-up
-├── navigation_example.py        # Vehicle navigation
-└── imitation_learning_example.py # Learning from demonstrations
+├── pendulum_example.py  # Pendulum swing-up example
 docs/
 ├── README.md            # Documentation index
 ├── API_REFERENCE.md     # Complete API docs

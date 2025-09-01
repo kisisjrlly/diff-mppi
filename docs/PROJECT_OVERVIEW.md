@@ -36,17 +36,19 @@ diff-mppi/
 │   ├── __init__.py         # Public API exports
 │   └── core.py             # Main MPPI implementation
 ├── examples/               # Application examples
-│   ├── pendulum_example_clean.py
-│   ├── navigation_example.py
-│   └── imitation_learning_example.py
+│   └── pendulum_example.py # Pendulum swing-up example
 ├── docs/                   # Documentation
 │   ├── PROJECT_OVERVIEW.md
 │   ├── API_REFERENCE.md
 │   ├── THEORY.md
-│   └── EXAMPLES.md
+│   ├── EXAMPLES.md
+│   ├── INSTALLATION.md
+│   ├── CONTRIBUTING.md
+│   └── README.md
 ├── tests/                  # Unit tests (future)
 ├── setup.py               # Package setup
 ├── pyproject.toml         # Modern packaging config
+├── requirements.txt       # Dependencies
 └── README.md              # Quick start guide
 ```
 
@@ -112,7 +114,7 @@ solution = controller.solve(initial_state)
 
 ### Testing
 ```bash
-python examples/pendulum_example_clean.py
+python examples/pendulum_example.py
 ```
 
 ## Performance Characteristics
