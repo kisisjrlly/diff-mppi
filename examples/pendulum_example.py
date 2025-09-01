@@ -51,13 +51,17 @@ def pendulum_dynamics(state: torch.Tensor, control: torch.Tensor) -> torch.Tenso
 def pendulum_cost(state: torch.Tensor, control: torch.Tensor) -> torch.Tensor:
     """
     Cost function for pendulum swing-up.
+    Target: upright position (θ = 0) with zero velocity.
     """
     cos_theta = state[:, 0]
     theta_dot = state[:, 2]
     torque = control[:, 0]
     
     # Cost for being away from upright position (θ = 0)
-    angle_cost = (1.0 + cos_theta)**2
+    # When θ = 0: cos(θ) = 1, cost = 0 (minimum)
+    # When θ = π: cos(θ) = -1, cost = 4 (maximum)
+    # Squared term provides stronger gradients near the target
+    angle_cost = (1.0 - cos_theta)**2
     
     # Velocity and control costs
     velocity_cost = 0.1 * theta_dot**2
@@ -103,8 +107,24 @@ def run_example():
             **config
         )
         
-        # Solve
+        # Solve with convergence tracking
         start_time = time.time()
+        
+        # Track convergence by solving incrementally
+        convergence_costs = []
+        for iter_step in [2, 5, 10]:
+            current_control = controller.solve(x0, num_iterations=iter_step)
+            current_trajectory = controller.rollout(x0, current_control)
+            
+            # Calculate cost for this iteration
+            iter_cost = 0.0
+            for i in range(len(current_trajectory) - 1):
+                state = current_trajectory[i].unsqueeze(0)
+                control = current_control[i].unsqueeze(0)
+                iter_cost += pendulum_cost(state, control).item()
+            convergence_costs.append(iter_cost)
+        
+        # Final solve for the result
         optimal_control = controller.solve(x0, num_iterations=10)
         solve_time = time.time() - start_time
         
@@ -113,17 +133,43 @@ def run_example():
         
         # Analyze result
         final_state = trajectory[-1]
-        final_angle = torch.atan2(final_state[1], final_state[0])
-        final_angle_deg = final_angle * 180 / np.pi
         
-        print(f"  Final angle: {final_angle_deg:.1f}°")
+        # Raw angle calculation
+        final_angle_rad = torch.atan2(final_state[1], final_state[0])
+        final_angle_deg = final_angle_rad.item() * 180.0 / np.pi
+        
+        # Normalized angle error (minimum distance to target 0°)
+        angle_error = (final_angle_deg + 180.0) % 360.0 - 180.0  # Normalize to (-180, 180]
+        angle_error_abs = abs(angle_error)
+        
+        # Success criteria (within 10° of upright and low velocity)
+        is_successful = angle_error_abs < 10.0 and abs(final_state[2].item()) < 1.0
+        
+        # Trajectory cost (total accumulated cost)
+        total_cost = 0.0
+        for i in range(len(trajectory) - 1):
+            state = trajectory[i].unsqueeze(0)
+            control = optimal_control[i].unsqueeze(0)
+            total_cost += pendulum_cost(state, control).item()
+        
+        print(f"  Final angle (raw): {final_angle_deg:.1f}°")
+        print(f"  Angle error: {angle_error:.1f}° (abs: {angle_error_abs:.1f}°)")
         print(f"  Final velocity: {final_state[2]:.3f} rad/s")
+        print(f"  Total cost: {total_cost:.2f}")
+        print(f"  Convergence: {convergence_costs[0]:.1f} → {convergence_costs[1]:.1f} → {convergence_costs[2]:.1f}")
+        print(f"  Success: {'✅' if is_successful else '❌'}")
         print(f"  Solve time: {solve_time:.3f}s")
         
         results[name] = {
             "trajectory": trajectory.cpu(),
             "control": optimal_control.cpu(),
-            "final_angle": final_angle_deg.item(),
+            "final_angle_raw": final_angle_deg,
+            "angle_error": angle_error,
+            "angle_error_abs": angle_error_abs,
+            "final_velocity": final_state[2].item(),
+            "total_cost": total_cost,
+            "convergence_costs": convergence_costs,
+            "is_successful": is_successful,
             "solve_time": solve_time
         }
     
@@ -174,28 +220,40 @@ def plot_results(results):
     # Plot 4: Performance comparison
     ax = axes[1, 1]
     names = list(results.keys())
-    final_angles = [abs(results[name]["final_angle"]) for name in names]
+    angle_errors = [results[name]["angle_error_abs"] for name in names]
     solve_times = [results[name]["solve_time"] for name in names]
+    total_costs = [results[name]["total_cost"] for name in names]
     
     x = np.arange(len(names))
+    width = 0.25
+    
+    # Create three bars: angle error, solve time (scaled), and total cost (scaled)
     ax2 = ax.twinx()
     
-    bars1 = ax.bar(x - 0.2, final_angles, 0.4, label='Final Angle Error', alpha=0.7)
-    bars2 = ax2.bar(x + 0.2, solve_times, 0.4, label='Solve Time', alpha=0.7, color='orange')
+    bars1 = ax.bar(x - width, angle_errors, width, label='Angle Error (°)', alpha=0.8, color='red')
+    bars2 = ax2.bar(x, solve_times, width, label='Solve Time (s)', alpha=0.8, color='orange')
+    bars3 = ax2.bar(x + width, [cost/100 for cost in total_costs], width, 
+                    label='Total Cost (÷100)', alpha=0.8, color='green')
     
     ax.set_xlabel('Method')
-    ax.set_ylabel('Final Angle Error (degrees)', color='blue')
-    ax2.set_ylabel('Solve Time (seconds)', color='orange')
+    ax.set_ylabel('Angle Error (degrees)', color='red')
+    ax2.set_ylabel('Time (s) / Cost (÷100)', color='orange')
     ax.set_title('Performance Comparison')
     ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=45)
+    ax.set_xticklabels(names, rotation=45, ha='right')
     
     # Add value labels on bars
-    for i, (bar1, bar2) in enumerate(zip(bars1, bars2)):
+    for i, (bar1, bar2, bar3) in enumerate(zip(bars1, bars2, bars3)):
         ax.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + 0.5, 
-                f'{final_angles[i]:.1f}°', ha='center', va='bottom')
+                f'{angle_errors[i]:.1f}°', ha='center', va='bottom', fontsize=9)
         ax2.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + 0.01, 
-                 f'{solve_times[i]:.2f}s', ha='center', va='bottom')
+                 f'{solve_times[i]:.2f}s', ha='center', va='bottom', fontsize=9)
+        ax2.text(bar3.get_x() + bar3.get_width()/2, bar3.get_height() + 0.01, 
+                 f'{total_costs[i]:.0f}', ha='center', va='bottom', fontsize=9)
+    
+    # Add legends
+    ax.legend(loc='upper left')
+    ax2.legend(loc='upper right')
     
     plt.tight_layout()
     plt.savefig("pendulum_results.png", dpi=300, bbox_inches='tight')
@@ -212,9 +270,31 @@ if __name__ == "__main__":
     print("SUMMARY:")
     print("="*50)
     
-    best_angle = min(results.values(), key=lambda x: abs(x["final_angle"]))
-    fastest = min(results.values(), key=lambda x: x["solve_time"])
+    # Calculate success rate
+    successful_methods = [name for name, result in results.items() if result["is_successful"]]
+    success_rate = len(successful_methods) / len(results) * 100
     
-    print(f"Best final angle: {best_angle['final_angle']:.1f}°")
-    print(f"Fastest solve time: {fastest['solve_time']:.3f}s")
-    print("✅ All methods successfully swing pendulum to upright position!")
+    # Find best performers
+    best_accuracy = min(results.values(), key=lambda x: x["angle_error_abs"])
+    fastest = min(results.values(), key=lambda x: x["solve_time"])
+    lowest_cost = min(results.values(), key=lambda x: x["total_cost"])
+    
+    print(f"Success Rate: {success_rate:.0f}% ({len(successful_methods)}/{len(results)} methods)")
+    print(f"Successful Methods: {', '.join(successful_methods) if successful_methods else 'None'}")
+    print("")
+    print(f"Best Accuracy: {best_accuracy['angle_error_abs']:.1f}° error")
+    print(f"Fastest Method: {fastest['solve_time']:.3f}s")
+    print(f"Lowest Cost: {lowest_cost['total_cost']:.1f}")
+    print("")
+    
+    # Method-wise performance
+    for name, result in results.items():
+        status = "✅" if result["is_successful"] else "❌"
+        print(f"{status} {name:15} | Error: {result['angle_error_abs']:5.1f}° | "
+              f"Time: {result['solve_time']:5.3f}s | Cost: {result['total_cost']:6.1f}")
+    
+    if success_rate > 0:
+        print(f"\n🎉 {success_rate:.0f}% of methods successfully controlled the pendulum!")
+    else:
+        print(f"\n⚠️  No methods achieved the success criteria (≤10° error, ≤1 rad/s velocity)")
+        print("Consider tuning parameters or increasing iterations.")
