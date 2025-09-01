@@ -383,166 +383,61 @@ if __name__ == "__main__":
     trajectory, control = run_navigation_example()
 ```
 
-## Example 3: Imitation Learning
+## Example 3: Neural Dynamics Learning
 
 ### Problem Description
 
-Learn to reproduce expert behavior by training neural cost and dynamics models using inverse optimal control.
+Learn a neural network model of the pendulum dynamics from trajectory data and use it for optimal control. This demonstrates the differentiable nature of PI-Net for learning dynamics models.
 
 ### Implementation
 
 ```python
-import torch
-import torch.nn as nn
-import diff_mppi
-
-class NeuralDynamics(nn.Module):
-    """Learnable dynamics model."""
-    def __init__(self, state_dim, control_dim, hidden_dim=64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim + control_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, state_dim)
-        )
-    
-    def forward(self, state, control):
-        x = torch.cat([state, control], dim=1)
-        return state + self.net(x)  # Residual connection
-
-class NeuralCost(nn.Module):
-    """Learnable cost function."""
-    def __init__(self, state_dim, control_dim, hidden_dim=32):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim + control_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-    
-    def forward(self, state, control):
-        x = torch.cat([state, control], dim=1)
-        return self.net(x).squeeze(-1)
-
-def imitation_learning_example():
-    """Learn from expert pendulum demonstrations."""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # Load or generate expert data
-    expert_trajectories = generate_expert_pendulum_data()
-    
-    # Initialize neural models
-    dynamics_model = NeuralDynamics(state_dim=3, control_dim=1).to(device)
-    cost_model = NeuralCost(state_dim=3, control_dim=1).to(device)
-    
-    # Optimizers
-    dynamics_optimizer = torch.optim.Adam(dynamics_model.parameters(), lr=1e-3)
-    cost_optimizer = torch.optim.Adam(cost_model.parameters(), lr=1e-3)
-    
-    # Training loop
-    for epoch in range(100):
-        # Train dynamics model (supervised learning)
-        dynamics_loss = train_dynamics_epoch(
-            dynamics_model, dynamics_optimizer, expert_trajectories
-        )
-        
-        # Train cost model (inverse optimal control)
-        cost_loss = train_cost_epoch(
-            cost_model, cost_optimizer, dynamics_model, expert_trajectories
-        )
-        
-        if epoch % 20 == 0:
-            print(f"Epoch {epoch}: Dynamics Loss = {dynamics_loss:.4f}, "
-                  f"Cost Loss = {cost_loss:.4f}")
-    
-    # Test learned models
-    controller = diff_mppi.create_mppi_controller(
-        state_dim=3,
-        control_dim=1,
-        dynamics_fn=dynamics_model,
-        cost_fn=cost_model,
-        horizon=30,
-        num_samples=100,
-        device=device
-    )
-    
-    # Compare with expert
-    x0 = torch.tensor([-1.0, 0.0, 0.0], device=device)
-    learned_control = controller.solve(x0, num_iterations=10)
-    learned_trajectory = controller.rollout(x0, learned_control)
-    
-    return learned_trajectory, expert_trajectories
-
-def train_dynamics_epoch(model, optimizer, expert_data):
-    """Train dynamics model on expert trajectories."""
-    model.train()
-    total_loss = 0.0
-    
-    for trajectory, controls in expert_data:
-        optimizer.zero_grad()
-        
-        # Predict next states
-        states = trajectory[:-1]  # All but last
-        next_states_true = trajectory[1:]  # All but first
-        next_states_pred = model(states, controls)
-        
-        # MSE loss
-        loss = nn.MSELoss()(next_states_pred, next_states_true)
-        loss.backward()
-        optimizer.step()
-        
-        total_loss += loss.item()
-    
-    return total_loss / len(expert_data)
-
-def train_cost_epoch(cost_model, optimizer, dynamics_model, expert_data):
-    """Train cost model using inverse optimal control."""
-    cost_model.train()
-    dynamics_model.eval()
-    
-    total_loss = 0.0
-    
-    for expert_trajectory, expert_controls in expert_data:
-        optimizer.zero_grad()
-        
-        # Generate alternative trajectories
-        initial_state = expert_trajectory[0]
-        
-        # Create MPPI controller with current cost model
-        controller = diff_mppi.create_mppi_controller(
-            state_dim=3, control_dim=1,
-            dynamics_fn=dynamics_model,
-            cost_fn=cost_model,
-            horizon=len(expert_controls),
-            num_samples=50
-        )
-        
-        # Get MPPI solution
-        mppi_controls = controller.solve(initial_state, num_iterations=3)
-        
-        # Compute costs
-        expert_cost = compute_trajectory_cost(
-            cost_model, expert_trajectory, expert_controls
-        )
-        mppi_cost = compute_trajectory_cost(
-            cost_model, 
-            controller.rollout(initial_state, mppi_controls),
-            mppi_controls
-        )
-        
-        # Inverse optimal control loss: expert should have lower cost
-        loss = torch.relu(expert_cost - mppi_cost + 1.0)  # Margin loss
-        loss.backward()
-        optimizer.step()
-        
-        total_loss += loss.item()
-    
-    return total_loss / len(expert_data)
+# See examples/neural_dynamics_example.py for complete implementation
+python examples/neural_dynamics_example.py
 ```
+
+This example shows:
+- Learning dynamics from random trajectory data
+- Using learned dynamics with diff-mppi for control
+- Comparing performance with true dynamics
+
+### Expected Results
+
+- Neural dynamics model achieves low MSE loss (< 0.001)
+- Control performance comparable to true dynamics
+- Visualization of learning progress and control comparison
+
+## Example 4: Imitation Learning
+
+### Problem Description
+
+Complete implementation of the core PI-Net concept: learning both neural dynamics and cost models from expert demonstrations using end-to-end differentiable optimization.
+
+### Implementation
+
+```python
+# See examples/imitation_learning_example.py for complete implementation
+python examples/imitation_learning_example.py
+```
+
+This example demonstrates:
+- Generating expert demonstrations using true models
+- Learning neural dynamics (supervised learning)
+- Learning neural cost function (inverse optimal control)
+- End-to-end gradient flow through the MPPI solver
+
+### Key Features
+
+1. **Expert Data Generation**: Creates expert trajectories using true dynamics and cost
+2. **Dynamics Learning**: Supervised learning on state transitions
+3. **Cost Learning**: Inverse optimal control with margin loss
+4. **End-to-end Training**: Gradients flow through the entire MPPI solver
+
+### Expected Results
+
+- Both models learn to approximate expert behavior
+- Learned policies achieve similar final angles to expert
+- Demonstrates successful end-to-end differentiable learning
 
 ## Example 4: Real-time Control
 

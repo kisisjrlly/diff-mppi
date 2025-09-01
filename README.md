@@ -63,16 +63,23 @@ trajectory = controller.rollout(initial_state, optimal_control)
 
 ## Examples
 
-### Pendulum Swing-up
+Run the included examples:
 
 ```bash
+# Basic pendulum swing-up with acceleration method comparison
 python examples/pendulum_example.py
+
+# Neural dynamics learning and control
+python examples/neural_dynamics_example.py
+
+# Complete imitation learning with end-to-end training
+python examples/imitation_learning_example.py
 ```
 
-This example demonstrates:
-- Pendulum swing-up from hanging position to upright
-- Comparison of standard vs accelerated MPPI methods
-- Visualization of results
+These examples demonstrate different aspects of the library:
+- **Pendulum example**: Optimization with known models
+- **Neural dynamics**: Learning dynamics models
+- **Imitation learning**: Complete end-to-end differentiable learning
 
 ## Documentation
 
