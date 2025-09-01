@@ -187,39 +187,63 @@ def train_cost_model(
     expert_trajectories: List[Tuple[torch.Tensor, torch.Tensor]],
     device: str = "cpu"
 ) -> float:
-    """Train cost model using inverse optimal control loss."""
+    """Train cost model using inverse optimal control loss with batch processing."""
     cost_model.train()
     dynamics_model.eval()  # Keep dynamics frozen during cost training
     
-    total_loss = 0.0
-    num_trajectories = 0
+    if not expert_trajectories:
+        return 0.0
+    
+    # Batch process all trajectories for efficiency
+    optimizer.zero_grad()
+    
+    # Collect initial states and horizons
+    initial_states = []
+    horizons = []
+    expert_trajs = []
+    expert_ctrls = []
     
     for expert_trajectory, expert_controls in expert_trajectories:
-        optimizer.zero_grad()
+        initial_states.append(expert_trajectory[0])
+        horizons.append(len(expert_controls))
+        expert_trajs.append(expert_trajectory)
+        expert_ctrls.append(expert_controls)
+    
+    # Use common horizon (take minimum for batch processing)
+    common_horizon = min(horizons)
+    
+    # Stack initial states for batch processing
+    batch_initial_states = torch.stack(initial_states)
+    
+    # Create temporary MPPI controller with current models
+    temp_controller = diff_mppi.create_mppi_controller(
+        state_dim=3,
+        control_dim=1,
+        dynamics_fn=dynamics_model,
+        cost_fn=cost_model,
+        horizon=common_horizon,
+        num_samples=50,  # Fewer samples for faster training
+        temperature=0.2,
+        device=device
+    )
+    
+    # Get MPPI solution for all initial states at once (batch processing)
+    mppi_controls_batch = temp_controller.solve(batch_initial_states, num_iterations=3)
+    
+    total_loss = 0.0
+    num_trajectories = len(expert_trajectories)
+    
+    for i, (expert_trajectory, expert_controls) in enumerate(expert_trajectories):
+        # Use only the first common_horizon steps
+        expert_traj_truncated = expert_trajectory[:common_horizon+1]
+        expert_ctrl_truncated = expert_controls[:common_horizon]
+        mppi_controls = mppi_controls_batch[i]
         
-        initial_state = expert_trajectory[0]
-        horizon = len(expert_controls)
-        
-        # Create temporary MPPI controller with current models
-        temp_controller = diff_mppi.create_mppi_controller(
-            state_dim=3,
-            control_dim=1,
-            dynamics_fn=dynamics_model,
-            cost_fn=cost_model,
-            horizon=horizon,
-            num_samples=50,  # Fewer samples for faster training
-            temperature=0.2,
-            device=device
-        )
-        
-        # Get MPPI solution with current cost model
-        mppi_controls = temp_controller.solve(initial_state, num_iterations=3)
-        
-        # Compute trajectory costs
-        expert_cost = compute_trajectory_cost(cost_model, expert_trajectory, expert_controls)
+        # Compute expert trajectory cost
+        expert_cost = compute_trajectory_cost(cost_model, expert_traj_truncated, expert_ctrl_truncated)
         
         # Rollout MPPI trajectory and compute its cost
-        mppi_trajectory = temp_controller.rollout(initial_state, mppi_controls)
+        mppi_trajectory = temp_controller.rollout(batch_initial_states[i], mppi_controls)
         mppi_cost = compute_trajectory_cost(cost_model, mppi_trajectory, mppi_controls)
         
         # Inverse optimal control loss: expert should have lower cost
@@ -227,12 +251,14 @@ def train_cost_model(
         margin = 1.0
         loss = torch.relu(expert_cost - mppi_cost + margin)
         
-        if loss.item() > 0:  # Only backprop if there's a violation
-            loss.backward()
-            optimizer.step()
-        
         total_loss += loss.item()
-        num_trajectories += 1
+        
+        # Accumulate gradients
+        if loss.item() > 0:  # Only backprop if there's a violation
+            loss.backward(retain_graph=True)
+    
+    # Update parameters after processing all trajectories
+    optimizer.step()
     
     return total_loss / num_trajectories
 

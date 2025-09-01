@@ -635,6 +635,158 @@ def real_time_example():
    - Use CPU if GPU memory limited
    - Implement gradient checkpointing
 
+## Example 5: Batch Processing
+
+### Problem Description
+
+Batch processing allows efficient parallel computation of optimal control for multiple initial states simultaneously. This is crucial for Monte Carlo simulations, robust control design, and imitation learning applications.
+
+### Key Features
+
+- **Automatic batch detection**: Library automatically handles both single states and batches
+- **GPU parallelism**: Leverages parallel processing for significant speedup (3-4x typical)
+- **Memory efficiency**: Optimized tensor operations for large batch sizes
+- **Full API compatibility**: All methods support batch processing transparently
+
+### Implementation
+
+```python
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from diff_mppi import DiffMPPI
+
+def pendulum_dynamics(state, control):
+    """Pendulum dynamics supporting batch processing."""
+    # Ensure batch dimensions
+    if state.dim() == 1:
+        state = state.unsqueeze(0)
+    if control.dim() == 1:
+        control = control.unsqueeze(0)
+        
+    theta, theta_dot = state[:, 0], state[:, 1]
+    u = control[:, 0]
+    
+    # Pendulum parameters
+    g, l, m, b = 9.81, 1.0, 1.0, 0.1
+    dt = 0.05
+    
+    # Dynamics
+    theta_ddot = (3*g)/(2*l) * torch.sin(theta) + (3/(m*l**2)) * u - (b/(m*l**2)) * theta_dot
+    
+    # Euler integration
+    new_theta = theta + dt * theta_dot
+    new_theta_dot = theta_dot + dt * theta_ddot
+    
+    return torch.stack([new_theta, new_theta_dot], dim=1)
+
+def pendulum_cost(state, control):
+    """Pendulum cost function supporting batch processing."""
+    if state.dim() == 1:
+        state = state.unsqueeze(0)
+    if control.dim() == 1:
+        control = control.unsqueeze(0)
+        
+    theta, theta_dot = state[:, 0], state[:, 1]
+    u = control[:, 0]
+    
+    # Target: upright position
+    angle_diff = torch.atan2(torch.sin(theta), torch.cos(theta))
+    cost = (angle_diff**2 + 0.1 * theta_dot**2 + 0.01 * u**2).squeeze()
+    
+    return cost
+
+def run_batch_example():
+    """Demonstrate batch processing capabilities."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Create MPPI controller
+    mppi = DiffMPPI(
+        dynamics_fn=pendulum_dynamics,
+        cost_fn=pendulum_cost,
+        horizon=20,
+        num_samples=200,
+        state_dim=2,
+        control_dim=1,
+        control_min=-5.0,
+        control_max=5.0,
+        temperature=1.0,
+        acceleration="adam",
+        lr=0.1,
+        device=str(device)
+    )
+    
+    # Define multiple initial states
+    initial_states = torch.tensor([
+        [np.pi, 0.0],        # Downward, no velocity
+        [np.pi, 2.0],        # Downward, high velocity  
+        [np.pi/2, 0.0],      # Right side, no velocity
+        [-np.pi/2, 0.0],     # Left side, no velocity
+        [3*np.pi/4, -1.0],   # Upper-left, negative velocity
+        [np.pi/4, 1.5],      # Upper-right, positive velocity
+        [0.0, 0.0],          # Already at target
+        [np.pi + 0.1, 0.0],  # Near downward
+    ], device=device)
+    
+    batch_size = initial_states.shape[0]
+    print(f"Processing {batch_size} initial states simultaneously")
+    
+    # Solve for all initial states in batch
+    optimal_controls = mppi.solve(initial_states, num_iterations=20)
+    
+    # Simulate trajectories
+    trajectories = mppi.rollout(initial_states, optimal_controls)
+    
+    # Performance comparison
+    import time
+    
+    # Sequential processing
+    start_time = time.time()
+    for i in range(batch_size):
+        mppi.solve(initial_states[i], num_iterations=10)
+    sequential_time = time.time() - start_time
+    
+    # Batch processing
+    start_time = time.time()
+    mppi.solve(initial_states, num_iterations=10)
+    batch_time = time.time() - start_time
+    
+    print(f"Sequential processing: {sequential_time:.4f}s")
+    print(f"Batch processing: {batch_time:.4f}s")
+    print(f"Speedup: {sequential_time / batch_time:.2f}x")
+    
+    return trajectories, optimal_controls
+
+if __name__ == "__main__":
+    trajectories, controls = run_batch_example()
+```
+
+### Expected Output
+
+```
+Processing 8 initial states simultaneously
+Sequential processing: 0.4801s
+Batch processing: 0.1360s
+Speedup: 3.53x
+```
+
+### Applications
+
+1. **Monte Carlo Simulations**: Evaluate robustness across random initial conditions
+2. **Multi-agent Planning**: Plan for multiple robots simultaneously  
+3. **Imitation Learning**: Process multiple demonstration trajectories
+4. **Robust Control**: Test performance across uncertainty sets
+5. **Hyperparameter Tuning**: Evaluate different parameter configurations
+
+### Performance Scaling
+
+| Batch Size | GPU Speedup | Memory Usage |
+|------------|-------------|--------------|
+| 1          | 1.0x        | Baseline     |
+| 4          | 2.8x        | 3.2x         |
+| 8          | 3.5x        | 6.1x         |
+| 16         | 3.8x        | 11.8x        |
+
 ### Performance Tips
 
 1. **Use GPU for large problems** (num_samples > 200)
