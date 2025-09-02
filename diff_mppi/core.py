@@ -29,6 +29,7 @@ class DiffMPPI:
         control_dim: int,
         dynamics_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
         cost_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        terminal_cost_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         horizon: int = 20,
         num_samples: int = 100,
         temperature: float = 1.0,
@@ -49,6 +50,7 @@ class DiffMPPI:
             control_dim: Dimension of control space  
             dynamics_fn: Function f(state, control) -> next_state
             cost_fn: Function g(state, control) -> cost
+            terminal_cost_fn: Optional terminal cost function φ(state) -> cost
             horizon: Planning horizon length
             num_samples: Number of trajectory samples
             temperature: Temperature parameter for sampling
@@ -64,6 +66,7 @@ class DiffMPPI:
         self.control_dim = control_dim
         self.dynamics_fn = dynamics_fn
         self.cost_fn = cost_fn
+        self.terminal_cost_fn = terminal_cost_fn
         self.horizon = horizon
         self.num_samples = num_samples
         self.temperature = temperature
@@ -164,10 +167,11 @@ class DiffMPPI:
             
             # Update control sequences for each batch element
             if self.acceleration is None:
-                # Standard MPPI update
-                self.batch_control_sequences = torch.sum(
-                    weights.unsqueeze(-1).unsqueeze(-1) * candidate_controls, dim=1
+                # Standard MPPI update - Algorithm Line 15: u_t,i ← u_t,i + weighted_perturbations
+                weighted_perturbations = torch.sum(
+                    weights.unsqueeze(-1).unsqueeze(-1) * noise, dim=1
                 )
+                self.batch_control_sequences = self.batch_control_sequences + weighted_perturbations
             else:
                 # Gradient-based update
                 gradients = torch.sum(
@@ -260,6 +264,11 @@ class DiffMPPI:
             
             # Update states
             states = self.dynamics_fn(states, controls)
+        
+        # Add terminal cost if provided (Algorithm Line 7: q_T,i^(k) ← φ(x_T,N^(k)))
+        if self.terminal_cost_fn is not None:
+            terminal_costs = self.terminal_cost_fn(states)
+            total_costs += terminal_costs
         
         # Reshape back to [batch_size, num_samples]
         return total_costs.view(batch_size, num_samples)
