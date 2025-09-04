@@ -18,7 +18,7 @@ def pendulum_dynamics(state: torch.Tensor, control: torch.Tensor) -> torch.Tenso
     Pendulum dynamics: state = [cos(θ), sin(θ), θ̇], control = [torque]
     """
     # Parameters
-    dt = 0.05
+    dt = 0.016
     g = 9.81
     l = 1.0
     m = 1.0
@@ -99,9 +99,9 @@ def run_example():
             control_dim=1,
             dynamics_fn=pendulum_dynamics,
             cost_fn=pendulum_cost,
-            horizon=30,
+            horizon=60,
             num_samples=100,
-            temperature=0.1,
+            temperature=0.001,
             acceleration=acceleration,
             device=device,
             **config
