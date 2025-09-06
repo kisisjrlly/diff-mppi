@@ -1177,13 +1177,15 @@ def main():
     output_dir = Path("/home/zhaoguodong/work/code/diff-mppi/examples/paper_results")
     output_dir.mkdir(exist_ok=True)
     
-    # Figure 3: System Sketches
-    print("\n1. Generating Figure 3: System Sketches...")
-    create_figure_3_system_sketches()
+    # # Figure 3: System Sketches
+    # print("\n1. Generating Figure 3: System Sketches...")
+    # create_figure_3_system_sketches()
     
     # Figure 4: Convergence Performance Comparison
     print("\n2. Generating Figure 4: Convergence Performance Comparison...")
     create_figure_4_convergence_comparison()
+
+    return 
     
     # Figure 5: Time Transition of Running Cost
     print("\n3. Generating Figure 5: Time Transition of Running Cost...")
