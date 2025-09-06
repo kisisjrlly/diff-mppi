@@ -3,7 +3,7 @@ Differentiable Model Predictive Path Integral (Diff-MPPI) Control
 
 A PyTorch-based implementation of MPPI with gradient-based acceleration methods.
 This module provides a unified, clean interface for MPPI with various optimization 
-enhancements including Adam, NAG, and RMSprop acceleration.
+enhancements including Adam, NAG, and AdaGrad acceleration.
 
 Based on:
 - "Path Integral Networks: End-to-End Differentiable Optimal Control" (Okada et al., 2017)
@@ -40,6 +40,14 @@ class DiffMPPI:
         eps: float = 1e-8,
         weight_decay: float = 0.0,
         device: str = "cpu",
+        # NAG-specific parameters (paper defaults)
+        nag_gamma: float = 0.8,
+        # Adam-specific parameters (paper defaults)
+        adam_beta1: float = 0.9,
+        adam_beta2: float = 0.999,
+        adam_lr: float = 1e-3,
+        # AdaGrad-specific parameters
+        adagrad_eta0: Optional[float] = None,
         **kwargs
     ):
         """
@@ -55,12 +63,17 @@ class DiffMPPI:
             num_samples: Number of trajectory samples
             temperature: Temperature parameter for sampling
             control_bounds: Optional (min_control, max_control) bounds
-            acceleration: Acceleration method ('adam', 'nag', 'rmsprop', None)
-            lr: Learning rate for acceleration methods
-            momentum: Momentum parameter for NAG/RMSprop
-            eps: Epsilon parameter for Adam/RMSprop
+            acceleration: Acceleration method ('adam', 'nag', 'adagrad', None)
+            lr: Base learning rate for acceleration methods
+            momentum: Momentum parameter (legacy, kept for compatibility)
+            eps: Epsilon parameter for Adam/AdaGrad numerical stability
             weight_decay: Weight decay for regularization
             device: Device for computation ('cpu' or 'cuda')
+            nag_gamma: NAG momentum decay coefficient (paper default: 0.8)
+            adam_beta1: Adam first moment decay rate (paper default: 0.9)
+            adam_beta2: Adam second moment decay rate (paper default: 0.999)
+            adam_lr: Adam learning rate (paper default: 1e-3)
+            adagrad_eta0: AdaGrad initial step size (default: uses lr)
         """
         self.state_dim = state_dim
         self.control_dim = control_dim
@@ -88,9 +101,16 @@ class DiffMPPI:
         # Acceleration settings
         self.acceleration = acceleration
         self.lr = lr
-        self.momentum = momentum
+        self.momentum = momentum  # Legacy parameter
         self.eps = eps
         self.weight_decay = weight_decay
+        
+        # Algorithm-specific parameters with paper defaults
+        self.nag_gamma = nag_gamma
+        self.adam_beta1 = adam_beta1
+        self.adam_beta2 = adam_beta2
+        self.adam_lr = adam_lr
+        self.adagrad_eta0 = adagrad_eta0 if adagrad_eta0 is not None else lr
         
         # Initialize acceleration state
         self._init_acceleration()
@@ -98,13 +118,16 @@ class DiffMPPI:
     def _init_acceleration(self):
         """Initialize acceleration-specific state variables."""
         if self.acceleration == "adam":
-            self.m = torch.zeros_like(self.control_sequence)
-            self.v = torch.zeros_like(self.control_sequence)
-            self.t = 0
+            # Adam parameters - configurable with paper defaults
+            self.adam_m = torch.zeros_like(self.control_sequence)
+            self.adam_v = torch.zeros_like(self.control_sequence)
+            self.adam_t = 0
         elif self.acceleration == "nag":
-            self.velocity = torch.zeros_like(self.control_sequence)
-        elif self.acceleration == "rmsprop":
-            self.squared_avg = torch.zeros_like(self.control_sequence)
+            # NAG: need to store previous update for momentum
+            self.nag_prev_update = torch.zeros_like(self.control_sequence)
+        elif self.acceleration == "adagrad":
+            # AdaGrad: cumulative squared gradients
+            self.adagrad_G = torch.zeros_like(self.control_sequence)
         
     def solve(
         self, 
@@ -150,8 +173,16 @@ class DiffMPPI:
                 device=self.device
             )
             
-            # Generate candidate control sequences for each batch element
-            candidate_controls = self.batch_control_sequences.unsqueeze(1) + noise
+            # Generate candidate control sequences - NAG requires momentum drift in sampling
+            if self.acceleration == "nag" and hasattr(self, 'batch_nag_prev_update'):
+                # NAG: Apply momentum drift to sampling distribution (Equation 18)
+                # E[u] = μ^(j-1) + γ·Δμ^(j-2)
+                momentum_drift = self.nag_gamma * self.batch_nag_prev_update
+                candidate_controls = (self.batch_control_sequences.unsqueeze(1) + 
+                                    momentum_drift.unsqueeze(1) + noise)
+            else:
+                # Standard sampling for other methods
+                candidate_controls = self.batch_control_sequences.unsqueeze(1) + noise
             
             # Apply control bounds if specified
             if self.control_min is not None and self.control_max is not None:
@@ -276,44 +307,57 @@ class DiffMPPI:
     def _init_batch_acceleration(self, batch_size: int):
         """Initialize acceleration-specific state variables for batch processing."""
         if self.acceleration == "adam":
-            self.batch_m = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
-            self.batch_v = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
-            self.batch_t = torch.zeros(batch_size, device=self.device, dtype=torch.long)
+            self.batch_adam_m = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
+            self.batch_adam_v = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
+            self.batch_adam_t = torch.zeros(batch_size, device=self.device, dtype=torch.long)
         elif self.acceleration == "nag":
-            self.batch_velocity = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
-        elif self.acceleration == "rmsprop":
-            self.batch_squared_avg = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
+            self.batch_nag_prev_update = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
+        elif self.acceleration == "adagrad":
+            self.batch_adagrad_G = torch.zeros(batch_size, self.horizon, self.control_dim, device=self.device)
     
     def _apply_batch_acceleration(self, gradients: torch.Tensor):
         """Apply gradient-based acceleration update for batch processing."""
         batch_size = gradients.shape[0]
-        updates = torch.zeros_like(self.batch_control_sequences)
         
         if self.acceleration == "adam":
-            self.batch_t += 1
+            # Adam algorithm following paper specifications
+            self.batch_adam_t += 1
             
-            # Update biased first and second moments
-            self.batch_m = self.momentum * self.batch_m + (1 - self.momentum) * gradients
-            self.batch_v = 0.999 * self.batch_v + 0.001 * gradients**2
+            # Update biased first and second moments (Equation from paper)
+            self.batch_adam_m = (self.adam_beta1 * self.batch_adam_m + 
+                               (1 - self.adam_beta1) * gradients)
+            self.batch_adam_v = (self.adam_beta2 * self.batch_adam_v + 
+                               (1 - self.adam_beta2) * gradients**2)
             
-            # Bias correction for each batch element
+            # Bias correction and parameter update
+            updates = torch.zeros_like(self.batch_control_sequences)
             for i in range(batch_size):
-                t_i = self.batch_t[i].item()
-                m_hat = self.batch_m[i] / (1 - self.momentum**t_i)
-                v_hat = self.batch_v[i] / (1 - 0.999**t_i)
-                updates[i] = self.lr * m_hat / (torch.sqrt(v_hat) + self.eps)
+                t_i = self.batch_adam_t[i].item()
+                m_hat = self.batch_adam_m[i] / (1 - self.adam_beta1**t_i)
+                v_hat = self.batch_adam_v[i] / (1 - self.adam_beta2**t_i)
+                updates[i] = self.adam_lr * m_hat / (torch.sqrt(v_hat) + self.eps)
                 
         elif self.acceleration == "nag":
-            # Nesterov Accelerated Gradient
-            prev_velocity = self.batch_velocity.clone()
-            self.batch_velocity = self.momentum * self.batch_velocity + self.lr * gradients
-            updates = -self.momentum * prev_velocity + (1 + self.momentum) * self.batch_velocity
+            # NAG following paper Algorithm 2 and Equation 19
+            # Δμ^(j-1) = γ·Δμ^(j-2) + δμ^(j-1)
+            # where δμ^(j-1) is the gradient from momentum-drifted sampling
+            delta_mu = self.nag_gamma * self.batch_nag_prev_update + gradients
+            updates = delta_mu
             
-        elif self.acceleration == "rmsprop":
-            # RMSprop
-            self.batch_squared_avg = (self.momentum * self.batch_squared_avg + 
-                                    (1 - self.momentum) * gradients**2)
-            updates = self.lr * gradients / (torch.sqrt(self.batch_squared_avg) + self.eps)
+            # Store this update for next iteration's momentum
+            self.batch_nag_prev_update = delta_mu.clone()
+            
+        elif self.acceleration == "adagrad":
+            # AdaGrad following paper Equation 20
+            # G^(j-1) = G^(j-2) + (Δμ^(j-1))²
+            self.batch_adagrad_G += gradients**2
+            
+            # η^(j-1) = η₀ / √(G^(j-1) + ε)
+            adaptive_lr = self.adagrad_eta0 / (torch.sqrt(self.batch_adagrad_G) + self.eps)
+            
+            # μ^(j) = μ^(j-1) + η^(j-1) ⊙ Δμ^(j-1) (element-wise multiplication)
+            updates = adaptive_lr * gradients
+            
         else:
             # Fallback: simple gradient update
             updates = self.lr * gradients
@@ -333,35 +377,44 @@ class DiffMPPI:
     
     def _apply_acceleration(self, gradient: torch.Tensor):
         """Apply gradient-based acceleration update."""
-        update = torch.zeros_like(self.control_sequence)
         
         if self.acceleration == "adam":
-            self.t += 1
+            # Adam algorithm following paper specifications
+            self.adam_t += 1
             
-            # Update biased first moment
-            self.m = self.momentum * self.m + (1 - self.momentum) * gradient
-            
-            # Update biased second moment  
-            self.v = 0.999 * self.v + 0.001 * gradient**2
+            # Update biased first and second moments
+            self.adam_m = (self.adam_beta1 * self.adam_m + 
+                          (1 - self.adam_beta1) * gradient)
+            self.adam_v = (self.adam_beta2 * self.adam_v + 
+                          (1 - self.adam_beta2) * gradient**2)
             
             # Bias correction
-            m_hat = self.m / (1 - self.momentum**self.t)
-            v_hat = self.v / (1 - 0.999**self.t)
+            m_hat = self.adam_m / (1 - self.adam_beta1**self.adam_t)
+            v_hat = self.adam_v / (1 - self.adam_beta2**self.adam_t)
             
             # Update parameters
-            update = self.lr * m_hat / (torch.sqrt(v_hat) + self.eps)
+            update = self.adam_lr * m_hat / (torch.sqrt(v_hat) + self.eps)
             
         elif self.acceleration == "nag":
-            # Nesterov Accelerated Gradient
-            prev_velocity = self.velocity.clone()
-            self.velocity = self.momentum * self.velocity + self.lr * gradient
-            update = -self.momentum * prev_velocity + (1 + self.momentum) * self.velocity
+            # NAG following paper Algorithm 2 and Equation 19
+            # Δμ^(j-1) = γ·Δμ^(j-2) + δμ^(j-1)
+            delta_mu = self.nag_gamma * self.nag_prev_update + gradient
+            update = delta_mu
             
-        elif self.acceleration == "rmsprop":
-            # RMSprop
-            self.squared_avg = (self.momentum * self.squared_avg + 
-                              (1 - self.momentum) * gradient**2)
-            update = self.lr * gradient / (torch.sqrt(self.squared_avg) + self.eps)
+            # Store this update for next iteration
+            self.nag_prev_update = delta_mu.clone()
+            
+        elif self.acceleration == "adagrad":
+            # AdaGrad following paper Equation 20
+            # G^(j-1) = G^(j-2) + (Δμ^(j-1))²
+            self.adagrad_G += gradient**2
+            
+            # η^(j-1) = η₀ / √(G^(j-1) + ε)
+            adaptive_lr = self.adagrad_eta0 / (torch.sqrt(self.adagrad_G) + self.eps)
+            
+            # μ^(j) = μ^(j-1) + η^(j-1) ⊙ Δμ^(j-1) (element-wise multiplication)
+            update = adaptive_lr * gradient
+            
         else:
             # Fallback: simple gradient update
             update = self.lr * gradient
@@ -460,6 +513,20 @@ class DiffMPPI:
             self.horizon, self.control_dim, device=self.device, requires_grad=True
         )
         self._init_acceleration()
+        
+        # Reset batch variables if they exist
+        if hasattr(self, 'batch_control_sequences'):
+            del self.batch_control_sequences
+        if hasattr(self, 'batch_adam_m'):
+            del self.batch_adam_m
+        if hasattr(self, 'batch_adam_v'): 
+            del self.batch_adam_v
+        if hasattr(self, 'batch_adam_t'):
+            del self.batch_adam_t
+        if hasattr(self, 'batch_nag_prev_update'):
+            del self.batch_nag_prev_update
+        if hasattr(self, 'batch_adagrad_G'):
+            del self.batch_adagrad_G
 
 
 def create_mppi_controller(
