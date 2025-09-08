@@ -93,11 +93,6 @@ class DiffMPPI:
             self.control_min = None
             self.control_max = None
         
-        # Initialize control sequence
-        self.control_sequence = torch.zeros(
-            horizon, control_dim, device=device, requires_grad=True
-        )
-        
         # Acceleration settings
         self.acceleration = acceleration
         self.lr = lr
@@ -112,23 +107,6 @@ class DiffMPPI:
         self.adam_lr = adam_lr
         self.adagrad_eta0 = adagrad_eta0 if adagrad_eta0 is not None else lr
         
-        # Initialize acceleration state
-        self._init_acceleration()
-        
-    def _init_acceleration(self):
-        """Initialize acceleration-specific state variables."""
-        if self.acceleration == "adam":
-            # Adam parameters - configurable with paper defaults
-            self.adam_m = torch.zeros_like(self.control_sequence)
-            self.adam_v = torch.zeros_like(self.control_sequence)
-            self.adam_t = 0
-        elif self.acceleration == "nag":
-            # NAG: need to store previous update for momentum
-            self.nag_prev_update = torch.zeros_like(self.control_sequence)
-        elif self.acceleration == "adagrad":
-            # AdaGrad: cumulative squared gradients
-            self.adagrad_G = torch.zeros_like(self.control_sequence)
-        
     def solve(
         self, 
         initial_state: torch.Tensor, 
@@ -139,19 +117,16 @@ class DiffMPPI:
         Solve optimal control problem using Diff-MPPI.
         
         Args:
-            initial_state: Initial state [state_dim] or [batch_size, state_dim]
+            initial_state: Initial state [batch_size, state_dim]
             num_iterations: Number of MPPI iterations
             verbose: Print convergence information
             
         Returns:
-            Optimal control sequence [horizon, control_dim] or [batch_size, horizon, control_dim]
+            Optimal control sequence [batch_size, horizon, control_dim]
         """
-        # Handle both single state and batch of states
+        # Ensure batch input
         if initial_state.dim() == 1:
-            initial_state = initial_state.unsqueeze(0)
-            single_state = True
-        else:
-            single_state = False
+            raise ValueError("Input must be batch mode: [batch_size, state_dim]. Got single state.")
             
         batch_size = initial_state.shape[0]
         
@@ -219,44 +194,7 @@ class DiffMPPI:
                 avg_cost = torch.mean(current_costs).item()
                 print(f"Iteration {iteration}: Avg Cost = {avg_cost:.6f}")
         
-        if single_state:
-            return self.batch_control_sequences[0].detach()
-        else:
-            return self.batch_control_sequences.detach()
-    
-    def _evaluate_trajectories(
-        self, 
-        initial_state: torch.Tensor, 
-        control_sequences: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Evaluate cost for multiple control sequences.
-        
-        Args:
-            initial_state: Initial state [1, state_dim]
-            control_sequences: Control sequences [num_samples, horizon, control_dim]
-            
-        Returns:
-            Costs for each sequence [num_samples]
-        """
-        batch_size = control_sequences.shape[0]
-        
-        # Initialize states
-        states = initial_state.repeat(batch_size, 1)
-        total_costs = torch.zeros(batch_size, device=self.device)
-        
-        # Rollout trajectories
-        for t in range(self.horizon):
-            controls = control_sequences[:, t, :]
-            
-            # Compute costs
-            step_costs = self.cost_fn(states, controls)
-            total_costs += step_costs
-            
-            # Update states
-            states = self.dynamics_fn(states, controls)
-            
-        return total_costs
+        return self.batch_control_sequences.detach()
     
     def _evaluate_trajectories_batch(
         self, 
@@ -375,63 +313,6 @@ class DiffMPPI:
                 self.batch_control_sequences, self.control_min, self.control_max
             )
     
-    def _apply_acceleration(self, gradient: torch.Tensor):
-        """Apply gradient-based acceleration update."""
-        
-        if self.acceleration == "adam":
-            # Adam algorithm following paper specifications
-            self.adam_t += 1
-            
-            # Update biased first and second moments
-            self.adam_m = (self.adam_beta1 * self.adam_m + 
-                          (1 - self.adam_beta1) * gradient)
-            self.adam_v = (self.adam_beta2 * self.adam_v + 
-                          (1 - self.adam_beta2) * gradient**2)
-            
-            # Bias correction
-            m_hat = self.adam_m / (1 - self.adam_beta1**self.adam_t)
-            v_hat = self.adam_v / (1 - self.adam_beta2**self.adam_t)
-            
-            # Update parameters
-            update = self.adam_lr * m_hat / (torch.sqrt(v_hat) + self.eps)
-            
-        elif self.acceleration == "nag":
-            # NAG following paper Algorithm 2 and Equation 19
-            # Δμ^(j-1) = γ·Δμ^(j-2) + δμ^(j-1)
-            delta_mu = self.nag_gamma * self.nag_prev_update + gradient
-            update = delta_mu
-            
-            # Store this update for next iteration
-            self.nag_prev_update = delta_mu.clone()
-            
-        elif self.acceleration == "adagrad":
-            # AdaGrad following paper Equation 20
-            # G^(j-1) = G^(j-2) + (Δμ^(j-1))²
-            self.adagrad_G += gradient**2
-            
-            # η^(j-1) = η₀ / √(G^(j-1) + ε)
-            adaptive_lr = self.adagrad_eta0 / (torch.sqrt(self.adagrad_G) + self.eps)
-            
-            # μ^(j) = μ^(j-1) + η^(j-1) ⊙ Δμ^(j-1) (element-wise multiplication)
-            update = adaptive_lr * gradient
-            
-        else:
-            # Fallback: simple gradient update
-            update = self.lr * gradient
-        
-        # Apply weight decay if specified
-        if self.weight_decay > 0:
-            update += self.weight_decay * self.control_sequence
-            
-        # Update control sequence
-        self.control_sequence = self.control_sequence + update
-        
-        # Apply bounds if specified
-        if self.control_min is not None and self.control_max is not None:
-            self.control_sequence = torch.clamp(
-                self.control_sequence, self.control_min, self.control_max
-            )
-    
     def rollout(
         self, 
         initial_state: torch.Tensor, 
@@ -441,92 +322,182 @@ class DiffMPPI:
         Rollout a trajectory given initial state(s) and control sequence(s).
         
         Args:
-            initial_state: Initial state(s) [state_dim] or [batch_size, state_dim]
-            control_sequence: Control sequence(s) [horizon, control_dim] or 
-                            [batch_size, horizon, control_dim].
-                            If None, uses current control sequence.
+            initial_state: Initial states [batch_size, state_dim]
+            control_sequence: Control sequences [batch_size, horizon, control_dim].
+                            If None, uses current batch control sequences.
                             
         Returns:
-            State trajectory [horizon+1, state_dim] or [batch_size, horizon+1, state_dim]
+            State trajectory [batch_size, horizon+1, state_dim]
         """
+        # Ensure batch input
+        if initial_state.dim() == 1:
+            raise ValueError("Input must be batch mode: [batch_size, state_dim]. Got single state.")
+            
         if control_sequence is None:
-            control_sequence = self.control_sequence
+            if not hasattr(self, 'batch_control_sequences'):
+                raise ValueError("No batch control sequences available. Call solve() first or provide control_sequence.")
+            control_sequence = self.batch_control_sequences
             
-        is_batch = initial_state.dim() > 1
+        batch_size = initial_state.shape[0]
         
-        if is_batch:
-            # Batch processing
-            batch_size = initial_state.shape[0]
+        if control_sequence.dim() == 2:
+            # Broadcast single control sequence to all batch elements
+            control_sequence = control_sequence.unsqueeze(0).repeat(batch_size, 1, 1)
+        
+        trajectory = torch.zeros(batch_size, self.horizon + 1, self.state_dim, device=self.device)
+        trajectory[:, 0, :] = initial_state
+        
+        for t in range(self.horizon):
+            controls = control_sequence[:, t, :]
+            next_states = self.dynamics_fn(trajectory[:, t, :], controls)
+            trajectory[:, t + 1, :] = next_states
             
-            if control_sequence.dim() == 2:
-                # Broadcast single control sequence to all batch elements
-                control_sequence = control_sequence.unsqueeze(0).repeat(batch_size, 1, 1)
-            
-            trajectory = torch.zeros(batch_size, self.horizon + 1, self.state_dim, device=self.device)
-            trajectory[:, 0, :] = initial_state
-            
-            for t in range(self.horizon):
-                controls = control_sequence[:, t, :]
-                next_states = self.dynamics_fn(trajectory[:, t, :], controls)
-                trajectory[:, t + 1, :] = next_states
-                
-            return trajectory
-        else:
-            # Single state processing
-            if initial_state.dim() == 1:
-                initial_state = initial_state.unsqueeze(0)
-                
-            trajectory = [initial_state.squeeze(0)]
-            state = initial_state
-            
-            for t in range(self.horizon):
-                control = control_sequence[t:t+1]
-                state = self.dynamics_fn(state, control)
-                trajectory.append(state.squeeze(0))
-                
-            return torch.stack(trajectory)
+        return trajectory
     
     def step(self, state: torch.Tensor) -> torch.Tensor:
         """
         Get next control action(s) for current state(s) (MPC-style).
         
+        This method implements Algorithm 3 from the paper when using NAG acceleration:
+        1. Solve optimization problem for current state
+        2. Return first control action
+        3. Apply warm start shifting for next iteration (NAG only)
+        
         Args:
-            state: Current state(s) [state_dim] or [batch_size, state_dim]
+            state: Current states [batch_size, state_dim]
             
         Returns:
-            Control action(s) [control_dim] or [batch_size, control_dim]
+            Control actions [batch_size, control_dim]
         """
-        is_batch = state.dim() > 1
+        # Ensure batch input
+        if state.dim() == 1:
+            raise ValueError("Input must be batch mode: [batch_size, state_dim]. Got single state.")
         
-        if is_batch:
-            # Batch processing
-            control_sequences = self.solve(state, num_iterations=5)
-            return control_sequences[:, 0, :].detach()  # First control for each batch
-        else:
-            # Single state processing
-            self.solve(state, num_iterations=5)
-            return self.control_sequence[0].detach()
+        # Batch processing
+        control_sequences = self.solve(state, num_iterations=5)
+        first_control = control_sequences[:, 0, :].detach()
+        
+        # Algorithm 3, Steps 7-9: Apply warm start shifting for next MPC iteration
+        # This is only applied for NAG acceleration as specified in the paper
+        if self.acceleration == "nag":
+            self.warm_start_shift(fill_method="replicate")
+            
+        return first_control
     
-    def reset(self):
-        """Reset controller state."""
-        self.control_sequence = torch.zeros(
-            self.horizon, self.control_dim, device=self.device, requires_grad=True
-        )
-        self._init_acceleration()
+    def warm_start_shift(self, fill_method: str = "replicate"):
+        """
+        Perform Algorithm 3 warm start: shift control sequences and NAG momentum terms.
         
-        # Reset batch variables if they exist
-        if hasattr(self, 'batch_control_sequences'):
-            del self.batch_control_sequences
-        if hasattr(self, 'batch_adam_m'):
-            del self.batch_adam_m
-        if hasattr(self, 'batch_adam_v'): 
-            del self.batch_adam_v
-        if hasattr(self, 'batch_adam_t'):
-            del self.batch_adam_t
+        This implements the key MPC warm start mechanism from the paper's Algorithm 3,
+        which is specifically designed for NAG acceleration:
+        - Step 7: Shift control sequence μ forward by one time step
+        - Step 8: Shift NAG momentum terms Δμ forward by one time step  
+        - Step 9: Initialize the last element using specified fill method
+        
+        Note: This method should only be called when using NAG acceleration.
+        
+        Args:
+            fill_method: Method to fill the last time step
+                - "replicate": Copy the second-to-last element (paper default)
+                - "zero": Set to zero
+                - "extrapolate": Linear extrapolation from last two elements
+        """
+        # Only apply warm start for NAG acceleration as specified in the paper
+        if self.acceleration != "nag":
+            return
+            
+        # Ensure batch control sequences exist
+        if not hasattr(self, 'batch_control_sequences'):
+            return
+            
+        # Algorithm 3, Step 7: Shift control sequence μ forward
+        # μ_new[0:T-1] = μ_old[1:T]
+        batch_size = self.batch_control_sequences.shape[0]
+        
+        # Store original sequences for reference before shifting
+        original_controls = self.batch_control_sequences.clone()
+        
+        # Shift control sequences
+        self.batch_control_sequences[:, :-1, :] = self.batch_control_sequences[:, 1:, :].clone()
+        
+        # Algorithm 3, Step 9: Initialize last element
+        if fill_method == "replicate":
+            # Copy second-to-last element from ORIGINAL sequence (paper default)
+            self.batch_control_sequences[:, -1, :] = original_controls[:, -2, :].clone()
+        elif fill_method == "zero":
+            self.batch_control_sequences[:, -1, :] = 0.0
+        elif fill_method == "extrapolate":
+            # Linear extrapolation: u_T = 2*u_{T-1} - u_{T-2} (using original sequence)
+            if self.horizon >= 2:
+                extrapolated = (2.0 * original_controls[:, -2, :] - 
+                              original_controls[:, -3, :])
+                self.batch_control_sequences[:, -1, :] = extrapolated
+            else:
+                self.batch_control_sequences[:, -1, :] = original_controls[:, -2, :].clone()
+        
+        # Algorithm 3, Step 8: Shift NAG momentum terms Δμ forward  
         if hasattr(self, 'batch_nag_prev_update'):
-            del self.batch_nag_prev_update
-        if hasattr(self, 'batch_adagrad_G'):
-            del self.batch_adagrad_G
+            # Store original momentum for reference
+            original_momentum = self.batch_nag_prev_update.clone()
+            
+            # Δμ_new[0:T-1] = Δμ_old[1:T]
+            self.batch_nag_prev_update[:, :-1, :] = self.batch_nag_prev_update[:, 1:, :].clone()
+            
+            # Initialize last momentum element
+            if fill_method == "replicate":
+                self.batch_nag_prev_update[:, -1, :] = original_momentum[:, -2, :].clone()
+            elif fill_method == "zero":
+                self.batch_nag_prev_update[:, -1, :] = 0.0
+            elif fill_method == "extrapolate":
+                if self.horizon >= 2:
+                    extrapolated = (2.0 * original_momentum[:, -2, :] - 
+                                  original_momentum[:, -3, :])
+                    self.batch_nag_prev_update[:, -1, :] = extrapolated
+                else:
+                    self.batch_nag_prev_update[:, -1, :] = original_momentum[:, -2, :].clone()
+                    
+        # Apply bounds if specified after shifting
+        if self.control_min is not None and self.control_max is not None:
+            self.batch_control_sequences = torch.clamp(
+                self.batch_control_sequences, self.control_min, self.control_max
+            )
+    
+    def reset(self, initial_states=None):
+        """
+        Reset the MPPI planner for batch processing mode only.
+        
+        Args:
+            initial_states: Batch of initial states [batch_size, state_dim]
+        """
+        if initial_states is not None:
+            if initial_states.dim() != 2:
+                raise ValueError("Initial states must be 2D tensor [batch_size, state_dim]")
+            batch_size = initial_states.shape[0]
+        else:
+            # If no initial states provided, use existing batch size or default
+            if hasattr(self, 'batch_control_sequences'):
+                batch_size = self.batch_control_sequences.shape[0]
+            else:
+                batch_size = 1  # Default batch size
+                
+        # Initialize batch control sequences
+        self.batch_control_sequences = torch.zeros(
+            batch_size, self.horizon, self.control_dim, device=self.device
+        )
+        
+        # Initialize acceleration-specific parameters for batch mode
+        if self.acceleration == "nag":
+            self.batch_nag_prev_update = torch.zeros_like(self.batch_control_sequences)
+        elif self.acceleration == "adam":
+            self.batch_adam_m = torch.zeros_like(self.batch_control_sequences)
+            self.batch_adam_v = torch.zeros_like(self.batch_control_sequences)
+            self.batch_adam_t = torch.zeros(batch_size, device=self.device, dtype=torch.long)
+        elif self.acceleration == "adagrad":
+            self.batch_adagrad_sum_squared = torch.zeros_like(self.batch_control_sequences)
+            
+        # Store current states if provided
+        if initial_states is not None:
+            self.current_states = initial_states
 
 
 def create_mppi_controller(
