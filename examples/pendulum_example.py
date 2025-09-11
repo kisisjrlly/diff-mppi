@@ -110,12 +110,13 @@ def mpc_controller(
         # Solve MPPI optimization at current state
         start_time = time.time()
         
-        # Get optimal control sequence from MPPI
-        optimal_control_sequence = controller.solve(
-            current_state.unsqueeze(0), 
-            num_iterations=num_iterations,
-            verbose=False
-        ).squeeze(0)
+        with torch.no_grad():
+            # Get optimal control sequence from MPPI
+            optimal_control_sequence = controller.solve(
+                current_state.unsqueeze(0), 
+                num_iterations=num_iterations,
+                verbose=False
+            ).squeeze(0)
         
         solve_time = time.time() - start_time
         solve_times.append(solve_time)
@@ -153,7 +154,7 @@ def mpc_controller(
         if angle_error < 5.0 and abs(current_state[2]) < 0.5:
             if verbose:
                 print(f"Successfully stabilized at step {step+1}!")
-            break
+            # break
     
     # Convert to tensors
     states_trajectory = torch.stack(states_history)
@@ -195,9 +196,9 @@ def run_example():
     
     # MPC configurations to test
     configs = [
-        {"name": "MPC-Standard", "acceleration": None, "horizon": 40, "num_samples": 1000, "num_iterations": 10, "mpc_steps": 200},
-        {"name": "MPC-Adam", "acceleration": "adam", "lr": 0.1, "horizon": 40, "num_samples": 1000, "num_iterations": 10, "mpc_steps": 200},
-        {"name": "MPC-NAG", "acceleration": "nag", "lr": 0.1, "momentum": 0.9, "horizon": 40, "num_samples": 1000, "num_iterations": 10, "mpc_steps": 200},
+        {"name": "MPC-Standard", "acceleration": None, "horizon": 10, "num_samples": 1000, "num_iterations": 20, "mpc_steps": 200},
+        {"name": "MPC-Adam", "acceleration": "adam", "lr": 0.1, "horizon": 10, "num_samples": 1000, "num_iterations": 20, "mpc_steps": 200},
+        {"name": "MPC-NAG", "acceleration": "nag", "lr": 0.1, "momentum": 0.5, "horizon": 10, "num_samples": 1000, "num_iterations": 20, "mpc_steps": 200},
     ]
     
     results = {}
@@ -218,7 +219,7 @@ def run_example():
             control_dim=1,
             dynamics_fn=pendulum_dynamics,
             cost_fn=pendulum_cost,
-            temperature=0.01,
+            temperature=0.1,
             acceleration=acceleration,
             device=device,
             **config

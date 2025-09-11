@@ -35,7 +35,7 @@ class DiffMPPI:
         temperature: float = 1.0,
         control_bounds: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         acceleration: Optional[str] = None,
-        lr: float = 0.01,
+        lr: float = 1e-3,
         momentum: float = 0.9,
         eps: float = 1e-8,
         weight_decay: float = 0.0,
@@ -45,7 +45,6 @@ class DiffMPPI:
         # Adam-specific parameters (paper defaults)
         adam_beta1: float = 0.9,
         adam_beta2: float = 0.999,
-        adam_lr: float = 1e-3,
         # AdaGrad-specific parameters
         adagrad_eta0: Optional[float] = None,
         **kwargs
@@ -72,7 +71,7 @@ class DiffMPPI:
             nag_gamma: NAG momentum decay coefficient (paper default: 0.8)
             adam_beta1: Adam first moment decay rate (paper default: 0.9)
             adam_beta2: Adam second moment decay rate (paper default: 0.999)
-            adam_lr: Adam learning rate (paper default: 1e-3)
+            lr: Learning rate, used for Adam (paper default: 1e-3) and other accelerations
             adagrad_eta0: AdaGrad initial step size (default: uses lr)
         """
         self.state_dim = state_dim
@@ -104,7 +103,7 @@ class DiffMPPI:
         self.nag_gamma = nag_gamma
         self.adam_beta1 = adam_beta1
         self.adam_beta2 = adam_beta2
-        self.adam_lr = adam_lr
+        self.adam_lr = lr  # Use lr parameter for Adam learning rate
         self.adagrad_eta0 = adagrad_eta0 if adagrad_eta0 is not None else lr
         
     def solve(
