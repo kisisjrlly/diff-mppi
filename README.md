@@ -1,6 +1,6 @@
 # Diff-MPPI: Differentiable Model Predictive Path Integral Control
 
-A PyTorch implementation of Path Integral Networks for differentiable optimal control, based on:
+A PyTorch implementation of Path Integral Networks for differentiable optimal control, now featuring both standard MPPI and Latent-space MPPI (LMPPI), based on:
 
 - Okada et al., 2017, "Path Integral Networks: End-to-End Differentiable Optimal Control"
 - Okada & Taniguchi, 2018, "Acceleration of Gradient-Based Path Integral Method for Efficient Optimal and Inverse Optimal Control"
@@ -8,10 +8,12 @@ A PyTorch implementation of Path Integral Networks for differentiable optimal co
 ## Features
 
 - **Standard MPPI**: Classic Model Predictive Path Integral control
+- **Latent-space MPPI (LMPPI)**: **NEW!** VAE-based latent space control for high-dimensional trajectory optimization
 - **Accelerated MPPI**: Gradient-based acceleration with Adam, NAG, and RMSprop
 - **Batch Processing**: Efficient parallel processing of multiple initial states (3-4x speedup)
 - **GPU Acceleration**: Full CUDA support for high-performance computing
 - **End-to-End Learning**: Differentiable implementation for neural dynamics and cost learning
+- **VAE Trajectory Modeling**: Learn compact latent representations of complex trajectory patterns
 - **Clean Interface**: Simple, reusable API for different control problems
 - **Pip Installable**: Easy installation and integration
 
@@ -27,6 +29,8 @@ pip install -e .
 ```
 
 ## Quick Start
+
+### Standard MPPI
 
 ```python
 import torch
@@ -67,6 +71,58 @@ batch_controls = controller.solve(initial_states)  # 3x speedup on GPU!
 trajectory = controller.rollout(initial_state, optimal_control)
 ```
 
+### Latent-space MPPI (LMPPI) **NEW!**
+
+```python
+import torch
+from diff_mppi.lmppi import TrajectoryVAE, LMPPIController, LMPPITrainer
+from diff_mppi.lmppi import create_synthetic_trajectories, VAEConfig, ControllerConfig
+
+# Step 1: Generate or load trajectory data
+trajectories = create_synthetic_trajectories(
+    num_trajectories=1000,
+    horizon=30,
+    state_dim=4,
+    control_dim=2
+)
+
+# Step 2: Train VAE for trajectory representation learning
+vae_config = VAEConfig(
+    input_dim=4,      # state dimension
+    latent_dim=8,     # compressed latent dimension
+    hidden_dims=[64, 32],
+    architecture="mlp"
+)
+
+vae = TrajectoryVAE(vae_config)
+trainer = LMPPITrainer(vae, learning_rate=1e-3)
+
+# Train the VAE
+trainer.train(trajectories, epochs=100, batch_size=32)
+
+# Step 3: Create LMPPI controller
+controller_config = ControllerConfig(
+    num_samples=100,
+    temperature=0.1,
+    horizon=30,
+    lambda_=1.0
+)
+
+def dynamics(state, control):
+    # Your dynamics model
+    return next_state
+
+def cost_fn(state, control):
+    # Your cost function
+    return cost
+
+controller = LMPPIController(vae, dynamics, cost_fn, controller_config)
+
+# Step 4: Solve in latent space
+initial_state = torch.tensor([1.0, 0.0, 0.5, -0.5])
+optimal_control = controller.solve(initial_state, num_iterations=20)
+```
+
 ## Examples
 
 Run the included examples:
@@ -75,7 +131,7 @@ Run the included examples:
 # Basic pendulum swing-up with acceleration method comparison
 python examples/pendulum_example.py
 
-# Batch processing demonstration (NEW!)
+# Batch processing demonstration
 python examples/batch_processing_example.py
 
 # Neural dynamics learning and control
@@ -83,6 +139,9 @@ python examples/neural_dynamics_example.py
 
 # Complete imitation learning with end-to-end training
 python examples/imitation_learning_example.py
+
+# Simple LMPPI demonstration (NEW!)
+python examples/simple_lmppi_demo.py
 ```
 
 These examples demonstrate different aspects of the library:
@@ -90,6 +149,7 @@ These examples demonstrate different aspects of the library:
 - **Batch processing**: Efficient parallel processing of multiple states
 - **Neural dynamics**: Learning dynamics models
 - **Imitation learning**: Complete end-to-end differentiable learning
+- **LMPPI demo**: Latent space trajectory optimization with VAE
 
 ## Documentation
 
@@ -111,6 +171,22 @@ The main controller class implementing Path Integral Networks.
 - `solve(initial_state, num_iterations)`: Solve for optimal control sequence
 - `rollout(initial_state, control_sequence)`: Simulate system trajectory
 - `step(state)`: Get single control action for real-time control
+
+### `LMPPI` Module **NEW!**
+
+Latent-space MPPI for high-dimensional trajectory optimization.
+
+**Key Classes:**
+- `TrajectoryVAE`: Variational autoencoder for trajectory representation learning
+- `LMPPIController`: Controller operating in latent space
+- `LMPPITrainer`: Training utilities for VAE models
+- `TrajectoryDataset`: Data handling and preprocessing utilities
+
+**Key Features:**
+- Support for MLP, LSTM, and CNN encoder/decoder architectures
+- Comprehensive training with validation and checkpointing
+- Configurable latent space dimensions and model complexity
+- Built-in visualization and evaluation tools
 
 ### Helper Functions
 
@@ -154,8 +230,19 @@ Clean separation between core functionality and examples:
 diff_mppi/
 ├── __init__.py          # Public API
 ├── core.py              # Core MPPI implementation
+├── lmppi/               # NEW! Latent-space MPPI module
+│   ├── __init__.py      # LMPPI API exports
+│   ├── models.py        # VAE architectures (MLP/LSTM/CNN)
+│   ├── controller.py    # Latent space controller
+│   ├── trainer.py       # VAE training utilities
+│   ├── data.py          # Trajectory data handling
+│   ├── config.py        # Configuration management
+│   ├── utils.py         # Visualization and evaluation
+│   └── README.md        # LMPPI documentation
 examples/
 ├── pendulum_example.py  # Pendulum swing-up example
+├── simple_lmppi_demo.py # NEW! LMPPI demonstration
+├── test_lmppi.py        # NEW! LMPPI test suite
 docs/
 ├── README.md            # Documentation index
 ├── API_REFERENCE.md     # Complete API docs
