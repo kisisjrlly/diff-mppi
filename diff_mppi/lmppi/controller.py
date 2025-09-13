@@ -465,19 +465,19 @@ class LMPPIController:
             # Store control
             trajectory[:, t, self.state_dim:] = step_controls
             
-            # Update state (this requires a dynamics model - placeholder)
-            # In practice, you'd use your actual dynamics function here
-            # For now, just use the decoded states from VAE
+            # Update state (this requires a dynamics model)
             if hasattr(self, '_dynamics_fn'):
-                next_states = self._dynamics_fn(current_states, step_controls)
-                trajectory[:, t + 1, :self.state_dim] = next_states
-                current_states = next_states
+                if t < self.horizon - 1:  # Only update if not at the last step
+                    next_states = self._dynamics_fn(current_states, step_controls)
+                    trajectory[:, t + 1, :self.state_dim] = next_states
+                    current_states = next_states
             else:
                 warnings.warn(
                     "No dynamics function provided. Using VAE-decoded states."
                 )
                 decoded_trajectory = self._decode_latent_batch(self.base_latent)
-                trajectory[:, t + 1, :self.state_dim] = decoded_trajectory[:, t + 1, :self.state_dim]
+                if t < self.horizon - 1:  # Only update if not at the last step
+                    trajectory[:, t + 1, :self.state_dim] = decoded_trajectory[:, t + 1, :self.state_dim]
                 
         return trajectory
     
